@@ -1,14 +1,15 @@
 import { useEffect, useState, useRef } from 'react';
-import { aiService } from './services';
-import { useRequest } from './hooks';
+
+import { aiService } from './services/ai';
+import { useRequest } from './hooks/useRequest';
 
 function App() {
+  // visible 控制 React 界面是否渲染（作为 Modal 弹窗）
+  const [visible, setVisible] = useState(false);
   const [mounted, setMounted] = useState(false);
-  // 使用 ref 来确保 logseq.ready 只被调用一次 (解决 React StrictMode 问题)
   const isInitializedRef = useRef(false);
 
-   // 使用 useRequest 管理 "检查连接" 的状态
-  // 当点击按钮时，调用 run() 触发 aiService.checkConnection
+  // Hook 示例：用于界面上的“测试连接”按钮
   const { 
     loading: connectLoading, 
     data: connectData, 
@@ -16,80 +17,144 @@ function App() {
     run: checkConnection 
   } = useRequest(aiService.checkConnection);
 
+  // 关闭界面的通用方法
+  const hideUI = () => {
+    window.logseq.hideMainUI();
+    setVisible(false);
+  };
+
   useEffect(() => {
-    // 如果已经在浏览器环境但没有 logseq 对象（比如在 Chrome 直接打开），直接标记为 mounted 以便调试 UI
+    // 浏览器调试模式兼容
     if (typeof window.logseq === 'undefined') {
-      console.log('⚠️ Running in browser mode (no Logseq API found)');
+      console.log('⚠️ Running in browser mode');
+      setVisible(true); // 浏览器模式下默认显示，方便调试
       setMounted(true);
       return;
     }
 
-    // 防止重复初始化
     if (isInitializedRef.current) return;
     isInitializedRef.current = true;
 
-    console.log('🚀 Attempting to connect to Logseq...');
-
     const initPlugin = async () => {
-      console.log('✅ Logseq Copilot loaded via Vite!');
+      console.log('✅ Logseq Copilot loaded!');
 
-      // --- 注册 Slash 命令 ---
+      // --- 1. 注册 Slash 命令 (集成 Mock Service) ---
+      
+      // 命令：总结
+      window.logseq.Editor.registerSlashCommand('✨ Copilot: Summarize', async () => {
+        const block = await window.logseq.Editor.getCurrentBlock();
+        if (!block || !block.content) return;
 
-      // 1. 总结
-      try {
-        logseq.Editor.registerSlashCommand('✨ Copilot: Summarize', async () => {
-          const block = await logseq.Editor.getCurrentBlock();
-          if (!block) return;
+        // 插入 Loading 块
+        const loadingBlock = await window.logseq.Editor.insertBlock(
+          block.uuid,
+          "🤖 AI is thinking...",
+          { sibling: false }
+        );
+        if (!loadingBlock) return;
 
-          await logseq.Editor.insertBlock(
-            block.uuid,
-            "🤖 Vite AI: Summarizing block... (This is a test)",
-            { sibling: false }
-          );
-        });
-        console.log('Command [Summarize] registered.');
+        try {
+          // 调用 Service
+          const summary = await aiService.summarize(block.content);
+          // 更新块内容
+          await window.logseq.Editor.updateBlock(loadingBlock.uuid, summary);
+        } catch (e) {
+          const errorMsg = e instanceof Error ? e.message : "Unknown error";
+          await window.logseq.Editor.updateBlock(loadingBlock.uuid, `❌ Error: ${errorMsg}`);
+        }
+      });
 
-        // 2. 润色
-        logseq.Editor.registerSlashCommand('✨ Copilot: Polish', async () => {
-          const block = await logseq.Editor.getCurrentBlock();
-          if (!block) return;
+      // 命令：润色
+      window.logseq.Editor.registerSlashCommand('✨ Copilot: Polish', async () => {
+        const block = await window.logseq.Editor.getCurrentBlock();
+        if (!block || !block.content) return;
 
-          await logseq.Editor.updateBlock(
-            block.uuid,
-            `${block.content}\n\n(Polished by Vite Plugin ⚡️)`
-          );
-        });
-        console.log('Command [Polish] registered.');
+        window.logseq.UI.showMsg("Polishing content...", "success");
 
-        // 成功连接后更新 UI 状态
-        setMounted(true);
+        try {
+          // 调用 Service
+          const polishedText = await aiService.polish(block.content);
+          // 直接替换当前块
+          await window.logseq.Editor.updateBlock(block.uuid, polishedText);
+        } catch (e) {
+          window.logseq.UI.showMsg("Polish failed", "error");
+        }
+      });
 
-        // 可选：弹出一个提示，确认插件加载成功 (仅调试用)
-        // logseq.UI.showMsg('Copilot Plugin Loaded Successfully!');
+      // --- 2. 注册工具栏图标 (UI 入口) ---
+      window.logseq.App.registerUIItem('toolbar', {
+        key: 'copilot-btn',
+        template: `
+          <a data-on-click="show-copilot-ui" class="button">
+            <i class="ti ti-sparkles" style="color: #6366f1;"></i>
+          </a>
+        `,
+      });
 
-      } catch (e) {
-        console.error('Failed to register commands', e);
-      }
+      // --- 3. 注册 UI 事件模型 ---
+      window.logseq.provideModel({
+        'show-copilot-ui': () => {
+          // 显示插件主界面 (iframe overlay)
+          window.logseq.showMainUI();
+          setVisible(true);
+        },
+      });
+
+      setMounted(true);
     };
 
-    // 启动 Logseq
-    // 注意：这里不需要 catch console.error，因为某些 Logseq 版本会因为 console 上下文报错
-    window.logseq.ready(initPlugin).catch((e: any) => {
-      console.error('Logseq ready error:', e);
-    });
+    window.logseq.ready(initPlugin).catch(console.error);
+
+    // 监听：当用户在 Logseq 其他地方点击时，自动隐藏插件界面
+    // 这是一个很好的体验优化，让插件表现得像一个原生弹窗
+    // const handleOutsideClick = (e: MouseEvent) => {
+    //     // 在实际 iframe 内部，如果点击了非卡片区域，也可以关闭
+    //     // 这里我们在 JSX 结构中用一个 Overlay 层来处理
+    // };
+    
+    // 如果插件 UI 隐藏了，同步 React 状态
+    if (window.logseq) {
+        window.logseq.on('ui:visible:changed', ({ visible }) => {
+            setVisible(visible);
+        });
+    }
 
   }, []);
 
+  // 如果不可见，为了性能可以渲染 null，或者渲染一个隐藏的空 div
+  if (!visible && mounted) return null;
+
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50 p-6 text-gray-800 font-sans">
-      <div className="max-w-sm w-full bg-white rounded-xl shadow-lg border border-gray-100 overflow-hidden">
+    // --- Overlay 层 ---
+    // 这个全屏 div 负责捕捉点击事件，点击空白处关闭界面
+    // 注意：onClick 需要阻止冒泡，以免点击内容时也关闭
+    <div 
+      className="fixed inset-0 flex justify-center items-center z-50"
+      onClick={hideUI} 
+      // 这里的背景色只是在调试时用，实际在 Logseq 中背景是透明的
+      style={{ backgroundColor: typeof window.logseq === 'undefined' ? 'rgba(0,0,0,0.5)' : 'transparent' }} 
+    >
+      {/* --- 内容卡片 --- */}
+      <div 
+        className="max-w-sm w-full bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden transform transition-all scale-100"
+        onClick={(e) => e.stopPropagation()} // 阻止点击卡片关闭
+      >
         {/* Header */}
-        <div className="bg-indigo-600 px-6 py-4">
-          <h2 className="text-white font-bold text-lg flex items-center gap-2">
-            <span className="text-xl">✨</span>
-            Copilot Settings
-          </h2>
-          <p className="text-indigo-100 text-xs mt-1 opacity-80">Mock Mode Active</p>
+        <div className="bg-indigo-600 px-6 py-4 flex justify-between items-center">
+          <div>
+            <h2 className="text-white font-bold text-lg flex items-center gap-2">
+              <span className="text-xl">✨</span>
+              Copilot Settings
+            </h2>
+            <p className="text-indigo-100 text-xs mt-1 opacity-80">Mock Mode Active</p>
+          </div>
+          {/* Close Button */}
+          <button 
+            onClick={hideUI}
+            className="text-white/80 hover:text-white bg-transparent p-1 border-none hover:bg-indigo-500 rounded"
+          >
+            ✕
+          </button>
         </div>
 
         {/* Content */}
@@ -102,48 +167,44 @@ function App() {
           </div>
 
           <p className="text-sm text-gray-500 leading-relaxed mb-6">
-            Registered Commands: <br/>
-            <b>/Copilot: Summarize</b><br/>
-            <b>/Copilot: Polish</b>
+            Commands ready:<br/>
+            <code className="bg-gray-100 px-1 rounded text-xs">/Copilot: Summarize</code><br/>
+            <code className="bg-gray-100 px-1 rounded text-xs">/Copilot: Polish</code>
           </p>
 
           <hr className="border-gray-100 my-4"/>
 
-          {/* 测试区域：展示 useRequest Hook 的效果 */}
           <div className="space-y-3">
              <div className="flex justify-between items-center">
-                <span className="text-sm font-medium text-gray-700">Service Test</span>
-                {connectLoading && <span className="text-xs text-indigo-500 animate-pulse">Checking API...</span>}
+                <span className="text-sm font-medium text-gray-700">API Connection</span>
+                {connectLoading && <span className="text-xs text-indigo-500 animate-pulse">Checking...</span>}
              </div>
              
-             {/* 按钮：绑定 checkConnection (即 useRequest 的 run 方法) */}
              <button 
                 onClick={() => checkConnection()}
                 disabled={!mounted || connectLoading}
-                className={`w-full py-2 px-4 rounded-lg font-medium text-sm transition-all
+                className={`w-full py-2 px-4 rounded-lg font-medium text-sm transition-all border
                   ${connectLoading 
-                    ? "bg-gray-100 text-gray-400 cursor-wait" 
-                    : "bg-indigo-50 text-indigo-600 hover:bg-indigo-100 border border-indigo-200"
+                    ? "bg-gray-100 text-gray-400 border-transparent cursor-wait" 
+                    : "bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50 hover:border-indigo-300 shadow-sm"
                   }`}
               >
-                {connectLoading ? "Testing Connection..." : "Test AI Connectivity"}
+                {connectLoading ? "Testing..." : "Test Connectivity"}
               </button>
 
-              {/* 结果展示：根据 Hook 返回的 data 和 error 渲染 */}
               {connectData && (
-                <div className="p-3 bg-green-50 text-green-700 text-xs rounded border border-green-100 flex justify-between items-center animate-in fade-in slide-in-from-top-2">
+                <div className="p-3 bg-green-50 text-green-700 text-xs rounded border border-green-100 flex justify-between items-center">
                   <span className="font-semibold">✅ {connectData.status}</span>
                   <span className="font-mono bg-green-100 px-1 rounded">{connectData.latency}ms</span>
                 </div>
               )}
               
               {connectError && (
-                <div className="p-3 bg-red-50 text-red-700 text-xs rounded border border-red-100 animate-in fade-in slide-in-from-top-2">
+                <div className="p-3 bg-red-50 text-red-700 text-xs rounded border border-red-100">
                   <b>Error:</b> {connectError.message}
                 </div>
               )}
           </div>
-
         </div>
       </div>
     </div>

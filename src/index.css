@@ -5,12 +5,30 @@
 
   color-scheme: light dark;
   color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
+  /* ⚠️ 关键修改：将全局背景设为透明，这样 overlay 才不会遮挡 Logseq 原生界面 */
+  background-color: transparent; 
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* 确保 html 和 body 也是透明的 */
+html, body {
+  background-color: transparent;
+  width: 100%;
+  height: 100%;
+  overflow: hidden; /* 防止出现滚动条 */
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  /* 默认隐藏，通过 React 状态控制显示，或者利用 z-index */
 }
 
 a {
@@ -20,14 +38,6 @@ a {
 }
 a:hover {
   color: #535bf2;
-}
-
-body {
-  margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
 }
 
 h1 {
@@ -57,10 +67,6 @@ button:focus-visible {
 @media (prefers-color-scheme: light) {
   :root {
     color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
   }
   button {
     background-color: #f9f9f9;
